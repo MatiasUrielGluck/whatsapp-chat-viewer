@@ -1,9 +1,54 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Virtuoso } from 'react-virtuoso'
 import JSZip from 'jszip'
 import { parseChat, participantsOf } from './lib/parser.js'
 import { decodeBytes } from './lib/decode.js'
 import { kindOf, mimeFor, extOf, isAttachment, escapeHtml, linkify } from './lib/media.js'
+
+// El chat se muestra dentro de un contenedor rotado 180° (lista "invertida" para
+// arrancar en el último mensaje). Esa rotación invierte la dirección del scroll
+// de la rueda y las teclas; este scroller la vuelve a invertir para que quede
+// natural: rueda/tecla abajo = hacia los mensajes más nuevos.
+const ChatScroller = forwardRef((props, ref) => {
+  const handleRef = (el) => {
+    if (el && !el.dataset.invScroll) {
+      el.dataset.invScroll = '1'
+      el.addEventListener(
+        'wheel',
+        (e) => {
+          e.preventDefault()
+          el.scrollTop -= e.deltaY
+        },
+        { passive: false },
+      )
+      el.addEventListener('keydown', (e) => {
+        const k = e.key
+        if (k === 'Home') {
+          e.preventDefault()
+          el.scrollTop = el.scrollHeight
+          return
+        }
+        if (k === 'End') {
+          e.preventDefault()
+          el.scrollTop = 0
+          return
+        }
+        let delta = 0
+        if (k === 'ArrowDown') delta = -80
+        else if (k === 'ArrowUp') delta = 80
+        else if (k === 'PageDown') delta = -el.clientHeight * 0.9
+        else if (k === 'PageUp') delta = el.clientHeight * 0.9
+        else if (k === ' ') delta = el.clientHeight * 0.9 * (e.shiftKey ? 1 : -1)
+        else return
+        e.preventDefault()
+        el.scrollTop += delta
+      })
+    }
+    if (typeof ref === 'function') ref(el)
+    else if (ref) ref.current = el
+  }
+  return <div ref={handleRef} className="virtuoso" {...props} />
+})
 
 const MONTHS = [
   'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
@@ -430,7 +475,7 @@ export default function App() {
                 <Virtuoso
                   ref={virtuosoRef}
                   key={chat.name}
-                  className="virtuoso"
+                  components={{ Scroller: ChatScroller }}
                   data={reversed}
                   computeItemKey={(i) => i}
                   overscan={1000}
