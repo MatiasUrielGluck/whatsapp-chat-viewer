@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import JSZip from 'jszip'
 import { parseChat, participantsOf } from './lib/parser.js'
 import { decodeBytes } from './lib/decode.js'
@@ -250,9 +250,38 @@ export default function App() {
   const [you, setYou] = useState('')
   const [dark, setDark] = useState(false)
   const [lb, setLb] = useState(null)
+  const [showFab, setShowFab] = useState(false)
   const urlsRef = useRef([])
+  const chatRef = useRef(null)
 
   const chat = chats[active]
+
+  const scrollToBottom = () => {
+    chatRef.current?.scrollTo({ top: chatRef.current.scrollHeight, behavior: 'smooth' })
+  }
+
+  const handleScroll = () => {
+    const el = chatRef.current
+    if (!el) return
+    setShowFab(el.scrollHeight - el.scrollTop - el.clientHeight > 160)
+  }
+
+  useEffect(() => {
+    if (phase === 'ready') {
+      setShowFab(false)
+      const el = chatRef.current
+      if (el) el.scrollTop = el.scrollHeight
+    }
+  }, [phase, active])
+
+  useEffect(() => {
+    if (!lb) return
+    const onKey = (e) => {
+      if (e.key === 'Escape') setLb(null)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [lb])
 
   const processFile = useCallback(async (file) => {
     setError(null)
@@ -335,17 +364,15 @@ export default function App() {
       {phase === 'ready' && chat ? (
         <>
           <header>
-            <div className="avatar">{(chat.participants.find((p) => p !== you) || '?').charAt(0)}</div>
+            <div className="avatar-wrap">
+              <div className="avatar">{(chat.participants.find((p) => p !== you) || '?').charAt(0)}</div>
+              <span className="online-dot" />
+            </div>
             <div className="hd-info">
               <h1>{chat.name}</h1>
               <p>
-                {chat.bubbles.length} mensajes · {chat.mediaCount} archivos
-                {stats
-                  ? ' · ' +
-                    Object.entries(stats)
-                      .map(([k, v]) => `${k}: ${v}`)
-                      .join(' · ')
-                  : ''}
+                <span className="online" />
+                en línea
               </p>
             </div>
             <div className="hd-controls">
@@ -367,6 +394,16 @@ export default function App() {
             </div>
           </header>
 
+          <div className="stats-bar">
+            <span>💬 {chat.bubbles.length} mensajes</span>
+            <span>🖼️ {chat.mediaCount} archivos</span>
+            {stats
+              ? Object.entries(stats).map(([k, v]) => (
+                  <span key={k}>👤 {k}: {v}</span>
+                ))
+              : null}
+          </div>
+
           {chats.length > 1 ? (
             <div className="chat-tabs">
               {chats.map((c, i) => (
@@ -386,6 +423,9 @@ export default function App() {
           ) : null}
 
           <div className="search-bar">
+            <svg className="search-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 1 0-.7.7l.27.28v.79l5 4.99L20.49 19zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14z" />
+            </svg>
             <input
               type="search"
               placeholder="Buscar en el chat…"
@@ -395,24 +435,43 @@ export default function App() {
             {query.trim() ? <span className="count">{filtered.length} resultados</span> : null}
           </div>
 
-          <main className="chat">
+          <main className="chat" ref={chatRef} onScroll={handleScroll}>
             {filtered.length ? (
               <Messages bubbles={filtered} you={you} media={chat.media} onImage={(url, name) => setLb({ url, name })} />
             ) : (
-              <div className="no-results">Sin resultados para «{query}»</div>
+              <div className="no-results">
+                <div className="nr-emoji">🔍</div>
+                Sin resultados para «{query}»
+              </div>
             )}
           </main>
+
+          {showFab ? (
+            <button className="fab" onClick={scrollToBottom} aria-label="Ir al último mensaje" title="Ir al último mensaje">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+                <path d="M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6z" />
+              </svg>
+            </button>
+          ) : null}
         </>
       ) : (
         <main className="start">
-          <h1 className="logo">WhatsApp <span>Chat Viewer</span></h1>
+          <h1 className="logo">
+            WhatsApp <span>Chat Viewer</span>
+          </h1>
           <DropZone onFile={processFile} busy={phase === 'parsing'} error={error} />
         </main>
       )}
 
       {lb ? (
-        <div className="lightbox" onClick={() => setLb(null)}>
+        <div className="lightbox" onClick={() => setLb(null)} role="dialog" aria-modal="true">
+          <button className="lb-close" onClick={() => setLb(null)} aria-label="Cerrar">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor">
+              <path d="M18.3 5.71 12 12l-6.3-6.29L4.3 7.12 10.59 13.4l-6.29 6.3 1.41 1.41 6.3-6.29 6.3 6.29 1.41-1.41-6.29-6.3 6.29-6.28z" />
+            </svg>
+          </button>
           <img src={lb.url} alt={lb.name} />
+          <div className="lb-caption">{lb.name}</div>
         </div>
       ) : null}
     </div>
