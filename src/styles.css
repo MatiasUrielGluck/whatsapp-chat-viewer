@@ -312,35 +312,68 @@ header {
 }
 
 /* ---------- Chat ---------- */
-.chat {
+/* Vista normal (scroll clásico, usada en resultados de búsqueda) */
+.chat.plain {
   flex: 1;
   overflow-y: auto;
   padding: 14px 6% 44px;
   scroll-behavior: smooth;
 }
 
-.chat::-webkit-scrollbar {
+.chat.plain::-webkit-scrollbar {
   width: 8px;
 }
 
-.chat::-webkit-scrollbar-thumb {
+.chat.plain::-webkit-scrollbar-thumb {
   background: rgba(0, 0, 0, 0.18);
   border-radius: 4px;
 }
 
-.chat::-webkit-scrollbar-thumb:hover {
+.chat.plain::-webkit-scrollbar-thumb:hover {
   background: rgba(0, 0, 0, 0.3);
 }
 
-.app.dark .chat::-webkit-scrollbar-thumb {
+.app.dark .chat.plain::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.16);
 }
 
-.messages {
-  display: flex;
-  flex-direction: column;
+/* Contenedor virtualizado (react-virtuoso). Se rota 180° para que la lista
+   "crezca hacia arriba" y el chat arranque mostrando el último mensaje. */
+.chat-rot {
+  flex: 1;
+  min-height: 0;
+  transform: rotate(180deg);
+}
+
+.virtuoso {
+  height: 100%;
+  padding: 14px 0 44px;
+}
+
+.virtuoso::-webkit-scrollbar {
+  width: 8px;
+}
+
+.virtuoso::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.18);
+  border-radius: 4px;
+}
+
+.virtuoso::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.app.dark .virtuoso::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.msg-col {
   max-width: 980px;
   margin: 0 auto;
+  padding: 0 8px;
+  /* Contra-rota cada ítem para cancelar el 180° del contenedor y que el
+     texto quede derecho (patrón de chat de react-virtuoso). */
+  transform: rotate(180deg);
 }
 
 /* ---------- Separador de fecha ---------- */
@@ -361,23 +394,11 @@ header {
 }
 
 /* ---------- Burbujas ---------- */
-@keyframes msg-in {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
 .row {
   display: flex;
   margin: 3px 0;
   align-items: flex-end;
   gap: 8px;
-  animation: msg-in 0.22s ease both;
 }
 
 .row.in {
@@ -592,9 +613,14 @@ audio.audio {
 }
 
 .no-results {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   text-align: center;
   color: var(--muted);
-  padding: 60px 20px;
+  padding: 20px;
 }
 
 .nr-emoji {

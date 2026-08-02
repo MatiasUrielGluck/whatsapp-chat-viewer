@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Virtuoso } from 'react-virtuoso'
 import JSZip from 'jszip'
 import { parseChat, participantsOf } from './lib/parser.js'
 import { decodeBytes } from './lib/decode.js'
@@ -159,35 +160,6 @@ function Bubble({ b, you, media, onImage }) {
   )
 }
 
-function Messages({ bubbles, you, media, onImage }) {
-  const list = useMemo(() => {
-    const rows = []
-    let lastDate = null
-    for (const b of bubbles) {
-      if (b.s !== 'system' && b.d !== lastDate) {
-        rows.push({ kind: 'date', date: b.d })
-        lastDate = b.d
-      }
-      rows.push({ kind: 'msg', b })
-    }
-    return rows
-  }, [bubbles])
-
-  return (
-    <div className="messages">
-      {list.map((row, i) =>
-        row.kind === 'date' ? (
-          <div key={i} className="date-sep">
-            <span>{fmtDate(row.date)}</span>
-          </div>
-        ) : (
-          <Bubble key={i} b={row.b} you={you} media={media} onImage={onImage} />
-        ),
-      )}
-    </div>
-  )
-}
-
 function DropZone({ onFile, busy, error }) {
   const inputRef = useRef(null)
   const [over, setOver] = useState(false)
@@ -252,27 +224,9 @@ export default function App() {
   const [lb, setLb] = useState(null)
   const [showFab, setShowFab] = useState(false)
   const urlsRef = useRef([])
-  const chatRef = useRef(null)
+  const virtuosoRef = useRef(null)
 
   const chat = chats[active]
-
-  const scrollToBottom = () => {
-    chatRef.current?.scrollTo({ top: chatRef.current.scrollHeight, behavior: 'smooth' })
-  }
-
-  const handleScroll = () => {
-    const el = chatRef.current
-    if (!el) return
-    setShowFab(el.scrollHeight - el.scrollTop - el.clientHeight > 160)
-  }
-
-  useEffect(() => {
-    if (phase === 'ready') {
-      setShowFab(false)
-      const el = chatRef.current
-      if (el) el.scrollTop = el.scrollHeight
-    }
-  }, [phase, active])
 
   useEffect(() => {
     if (!lb) return
@@ -347,6 +301,35 @@ export default function App() {
     if (!q) return chat.bubbles
     return chat.bubbles.filter((b) => b.b.toLowerCase().includes(q))
   }, [chat, query])
+
+  const rows = useMemo(() => {
+    const out = []
+    let lastDate = null
+    for (const b of filtered) {
+      if (b.s !== 'system' && b.d !== lastDate) {
+        out.push({ kind: 'date', date: b.d })
+        lastDate = b.d
+      }
+      out.push({ kind: 'msg', b })
+    }
+    return out
+  }, [filtered])
+
+  // Orden invertido (el más nuevo primero) + rotación 180° en CSS: la lista
+  // "crece hacia arriba" y arranca mostrando el último mensaje abajo.
+  const reversed = useMemo(() => rows.slice().reverse(), [rows])
+
+  const renderRow = (row) => (
+    <div className="msg-col">
+      {row.kind === 'date' ? (
+        <div className="date-sep">
+          <span>{fmtDate(row.date)}</span>
+        </div>
+      ) : (
+        <Bubble b={row.b} you={you} media={chat.media} onImage={(url, name) => setLb({ url, name })} />
+      )}
+    </div>
+  )
 
   const stats = useMemo(() => {
     if (!chat) return null
@@ -435,19 +418,43 @@ export default function App() {
             {query.trim() ? <span className="count">{filtered.length} resultados</span> : null}
           </div>
 
-          <main className="chat" ref={chatRef} onScroll={handleScroll}>
-            {filtered.length ? (
-              <Messages bubbles={filtered} you={you} media={chat.media} onImage={(url, name) => setLb({ url, name })} />
-            ) : (
-              <div className="no-results">
-                <div className="nr-emoji">🔍</div>
-                Sin resultados para «{query}»
+          {filtered.length ? (
+            query.trim() ? (
+              <div className="chat plain">
+                {rows.map((row, i) => (
+                  <div key={i}>{renderRow(row)}</div>
+                ))}
               </div>
-            )}
-          </main>
+            ) : (
+              <div className="chat-rot">
+                <Virtuoso
+                  ref={virtuosoRef}
+                  key={chat.name}
+                  className="virtuoso"
+                  data={reversed}
+                  computeItemKey={(i) => i}
+                  overscan={1000}
+                  atTopStateChange={(atTop) => setShowFab(!atTop)}
+                  itemContent={(i, row) => renderRow(row)}
+                />
+              </div>
+            )
+          ) : (
+            <div className="no-results">
+              <div className="nr-emoji">🔍</div>
+              Sin resultados para «{query}»
+            </div>
+          )}
 
           {showFab ? (
-            <button className="fab" onClick={scrollToBottom} aria-label="Ir al último mensaje" title="Ir al último mensaje">
+            <button
+              className="fab"
+              onClick={() =>
+                virtuosoRef.current?.scrollToIndex({ index: 0, align: 'start', behavior: 'smooth' })
+              }
+              aria-label="Ir al último mensaje"
+              title="Ir al último mensaje"
+            >
               <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
                 <path d="M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6z" />
               </svg>
