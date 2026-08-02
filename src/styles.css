@@ -371,8 +371,12 @@ header {
   max-width: 980px;
   margin: 0 auto;
   padding: 0 8px;
-  /* Contra-rota cada ítem para cancelar el 180° del contenedor y que el
-     texto quede derecho (patrón de chat de react-virtuoso). */
+}
+
+.chat-rot .msg-col {
+  /* Contra-rota cada ítem para cancelar el 180° del contenedor rotado y que
+     el texto quede derecho. Solo aplica en la vista virtualizada, no en la
+     lista plana de resultados de búsqueda. */
   transform: rotate(180deg);
 }
 
