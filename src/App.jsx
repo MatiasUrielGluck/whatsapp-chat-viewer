@@ -1,0 +1,420 @@
+import { useCallback, useMemo, useRef, useState } from 'react'
+import JSZip from 'jszip'
+import { parseChat, participantsOf } from './lib/parser.js'
+import { decodeBytes } from './lib/decode.js'
+import { kindOf, mimeFor, extOf, isAttachment, escapeHtml, linkify } from './lib/media.js'
+
+const MONTHS = [
+  'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+  'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre',
+]
+
+function fmtDate(d) {
+  const [day, month, year] = d.split('/')
+  return `${parseInt(day, 10)} de ${MONTHS[parseInt(month, 10) - 1]} de ${year}`
+}
+
+async function loadItems(file) {
+  const name = file.name.toLowerCase()
+  if (name.endsWith('.zip')) {
+    let zip
+    try {
+      zip = await JSZip.loadAsync(file)
+    } catch (e) {
+      throw new Error('No se pudo leer el archivo como ZIP. Verificá que sea un export de WhatsApp.')
+    }
+    const items = []
+    for (const entry of Object.values(zip.files)) {
+      if (entry.dir) continue
+      const basename = entry.name.split('/').pop()
+      if (!basename) continue
+      const data = await entry.async('uint8array')
+      items.push({ path: entry.name, basename, ext: extOf(basename), data })
+    }
+    return items
+  }
+  const data = new Uint8Array(await file.arrayBuffer())
+  const basename = file.name.split('/').pop()
+  return [{ path: file.name, basename, ext: extOf(basename), data }]
+}
+
+function partnerFromName(name) {
+  const m = /(?:\bChat de WhatsApp con\b|\bWhatsApp Chat with\b|\bWhatsApp Chat mit\b|\bChat WhatsApp avec\b)\s+(.+)$/i.exec(name)
+  return m ? m[1].trim() : null
+}
+
+function autoYou(chat) {
+  const partner = partnerFromName(chat.name)
+  const others = chat.participants.filter(
+    (s) => !partner || s.toLowerCase() !== partner.toLowerCase(),
+  )
+  return others.length ? others[0] : chat.participants[0] || ''
+}
+
+function Bubble({ b, you, media, onImage }) {
+  const out = b.s === you
+  const blocks = useMemo(() => {
+    const out = []
+    const lines = String(b.b).split('\n')
+    for (const line of lines) {
+      const file = isAttachment(line)
+      if (file) {
+        const item = media.get(file)
+        if (!item) {
+          out.push({ type: 'missing', file })
+        } else if (item.kind === 'image') {
+          out.push({ type: 'image', file, url: item.url })
+        } else if (item.kind === 'sticker') {
+          out.push({ type: 'sticker', file, url: item.url })
+        } else if (item.kind === 'video') {
+          out.push({ type: 'video', file, url: item.url })
+        } else if (item.kind === 'audio') {
+          out.push({ type: 'audio', file, url: item.url })
+        } else {
+          out.push({ type: 'link', file, url: item.url })
+        }
+      } else if (line.trim() === '<Multimedia omitido>') {
+        out.push({ type: 'omitted' })
+      } else if (line.trim() !== '') {
+        out.push({ type: 'text', html: linkify(escapeHtml(line)) })
+      }
+    }
+    return out
+  }, [b.b, media])
+
+  if (b.s === 'system') {
+    return (
+      <div className="row sys">
+        <div className="bubble">
+          {blocks.map((bl, i) =>
+            bl.type === 'text' ? (
+              <div key={i} className="sys-text" dangerouslySetInnerHTML={{ __html: bl.html }} />
+            ) : null,
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className={`row ${out ? 'out' : 'in'}`}>
+      {!out ? <div className="avatar-mini">{b.s.charAt(0)}</div> : null}
+      <div className="bubble">
+        {!out ? <div className="sender">{b.s}</div> : null}
+        {blocks.map((bl, i) => {
+          switch (bl.type) {
+            case 'image':
+              return (
+                <img
+                  key={i}
+                  className="photo"
+                  src={bl.url}
+                  alt={bl.file}
+                  loading="lazy"
+                  onClick={() => onImage(bl.url, bl.file)}
+                />
+              )
+            case 'sticker':
+              return (
+                <img
+                  key={i}
+                  className="sticker"
+                  src={bl.url}
+                  alt="sticker"
+                  onClick={() => onImage(bl.url, bl.file)}
+                />
+              )
+            case 'video':
+              return <video key={i} className="video" controls preload="metadata" src={bl.url} />
+            case 'audio':
+              return <audio key={i} className="audio" controls preload="none" src={bl.url} />
+            case 'link':
+              return (
+                <a key={i} className="file-link" href={bl.url} download={bl.file}>
+                  📎 {bl.file}
+                </a>
+              )
+            case 'missing':
+              return <div key={i} className="media-omitted">🚫 {bl.file} (no disponible en el zip)</div>
+            case 'omitted':
+              return <div key={i} className="media-omitted">🎞️ Multimedia omitido</div>
+            default:
+              return (
+                <div
+                  key={i}
+                  className="msg-text"
+                  dangerouslySetInnerHTML={{ __html: bl.html }}
+                />
+              )
+          }
+        })}
+        <div className="meta">
+          <span className="ticks" style={out ? undefined : { color: 'var(--muted)' }}>
+            {out ? '✓✓' : '✓'}
+          </span>
+          {b.t}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function Messages({ bubbles, you, media, onImage }) {
+  const list = useMemo(() => {
+    const rows = []
+    let lastDate = null
+    for (const b of bubbles) {
+      if (b.s !== 'system' && b.d !== lastDate) {
+        rows.push({ kind: 'date', date: b.d })
+        lastDate = b.d
+      }
+      rows.push({ kind: 'msg', b })
+    }
+    return rows
+  }, [bubbles])
+
+  return (
+    <div className="messages">
+      {list.map((row, i) =>
+        row.kind === 'date' ? (
+          <div key={i} className="date-sep">
+            <span>{fmtDate(row.date)}</span>
+          </div>
+        ) : (
+          <Bubble key={i} b={row.b} you={you} media={media} onImage={onImage} />
+        ),
+      )}
+    </div>
+  )
+}
+
+function DropZone({ onFile, busy, error }) {
+  const inputRef = useRef(null)
+  const [over, setOver] = useState(false)
+  const [dragErr, setDragErr] = useState(null)
+
+  const handle = (file) => {
+    if (!file) return
+    if (!/\.(zip|txt)$/i.test(file.name)) {
+      setDragErr('El archivo tiene que ser un .zip de export de WhatsApp (o un .txt).')
+      return
+    }
+    setDragErr(null)
+    onFile(file)
+  }
+
+  return (
+    <div className="dropzone-wrap">
+      <div
+        className={`dropzone ${over ? 'over' : ''}`}
+        onDragOver={(e) => {
+          e.preventDefault()
+          setOver(true)
+        }}
+        onDragLeave={() => setOver(false)}
+        onDrop={(e) => {
+          e.preventDefault()
+          setOver(false)
+          handle(e.dataTransfer.files?.[0])
+        }}
+        onClick={() => inputRef.current?.click()}
+      >
+        <input
+          ref={inputRef}
+          type="file"
+          accept=".zip,.txt"
+          style={{ display: 'none' }}
+          onChange={(e) => handle(e.target.files?.[0])}
+        />
+        <div className="dz-icon">💬</div>
+        <h2>{busy ? 'Procesando…' : 'Arrastrá acá el export de WhatsApp'}</h2>
+        <p>
+          {busy
+            ? 'Descomprimiendo y parseando el chat…'
+            : 'O hacé clic para seleccionar el archivo .zip. Todo se procesa en tu navegador, nada se sube a internet.'}
+        </p>
+        <div className="dz-hint">Se aceptan los exports que incluyen el .txt + audios/imágenes/videos/stickers</div>
+      </div>
+      {error ? <div className="error">{error}</div> : null}
+      {dragErr ? <div className="error">{dragErr}</div> : null}
+    </div>
+  )
+}
+
+export default function App() {
+  const [phase, setPhase] = useState('idle') // idle | parsing | ready
+  const [error, setError] = useState(null)
+  const [chats, setChats] = useState([])
+  const [active, setActive] = useState(0)
+  const [query, setQuery] = useState('')
+  const [you, setYou] = useState('')
+  const [dark, setDark] = useState(false)
+  const [lb, setLb] = useState(null)
+  const urlsRef = useRef([])
+
+  const chat = chats[active]
+
+  const processFile = useCallback(async (file) => {
+    setError(null)
+    setPhase('parsing')
+    try {
+      const items = await loadItems(file)
+      const txts = items.filter((it) => it.ext === 'txt')
+      if (!txts.length) {
+        throw new Error('No se encontró ningún archivo .txt dentro del zip.')
+      }
+
+      // Libera URLs de objetos anteriores.
+      urlsRef.current.forEach((u) => URL.revokeObjectURL(u))
+      urlsRef.current = []
+
+      const media = new Map()
+      for (const it of items) {
+        if (it.ext === 'txt') continue
+        const kind = kindOf(it.basename)
+        let url = null
+        if (kind !== 'other') {
+          url = URL.createObjectURL(new Blob([it.data], { type: mimeFor(it.ext, kind) }))
+          urlsRef.current.push(url)
+        }
+        if (!media.has(it.basename)) media.set(it.basename, { url, kind, ext: it.ext })
+      }
+
+      const parsed = txts.map((txt) => {
+        const bubbles = parseChat(decodeBytes(txt.data))
+        return {
+          name: txt.basename.replace(/\.txt$/i, ''),
+          bubbles,
+          participants: participantsOf(bubbles),
+          media,
+          mediaCount: media.size,
+        }
+      })
+
+      setChats(parsed)
+      setActive(0)
+      setQuery('')
+      setYou(autoYou(parsed[0]))
+      setPhase('ready')
+    } catch (e) {
+      setError(e.message || String(e))
+      setPhase('idle')
+    }
+  }, [])
+
+  const reset = () => {
+    urlsRef.current.forEach((u) => URL.revokeObjectURL(u))
+    urlsRef.current = []
+    setChats([])
+    setActive(0)
+    setQuery('')
+    setYou('')
+    setPhase('idle')
+  }
+
+  const filtered = useMemo(() => {
+    if (!chat) return []
+    const q = query.trim().toLowerCase()
+    if (!q) return chat.bubbles
+    return chat.bubbles.filter((b) => b.b.toLowerCase().includes(q))
+  }, [chat, query])
+
+  const stats = useMemo(() => {
+    if (!chat) return null
+    const counts = {}
+    for (const b of chat.bubbles) {
+      if (b.s === 'system') continue
+      counts[b.s] = (counts[b.s] || 0) + 1
+    }
+    return counts
+  }, [chat])
+
+  return (
+    <div className={`app ${dark ? 'dark' : ''}`}>
+      <div className="bg" />
+      {phase === 'ready' && chat ? (
+        <>
+          <header>
+            <div className="avatar">{(chat.participants.find((p) => p !== you) || '?').charAt(0)}</div>
+            <div className="hd-info">
+              <h1>{chat.name}</h1>
+              <p>
+                {chat.bubbles.length} mensajes · {chat.mediaCount} archivos
+                {stats
+                  ? ' · ' +
+                    Object.entries(stats)
+                      .map(([k, v]) => `${k}: ${v}`)
+                      .join(' · ')
+                  : ''}
+              </p>
+            </div>
+            <div className="hd-controls">
+              {chat.participants.length > 1 ? (
+                <select value={you} onChange={(e) => setYou(e.target.value)} title="¿Quién sos vos?" className="you-select">
+                  {chat.participants.map((p) => (
+                    <option key={p} value={p}>
+                      👤 {p}
+                    </option>
+                  ))}
+                </select>
+              ) : null}
+              <button className="icon-btn" onClick={() => setDark((d) => !d)} title="Cambiar tema">
+                {dark ? '☀️' : '🌙'}
+              </button>
+              <button className="icon-btn" onClick={reset} title="Cargar otro chat">
+                📂
+              </button>
+            </div>
+          </header>
+
+          {chats.length > 1 ? (
+            <div className="chat-tabs">
+              {chats.map((c, i) => (
+                <button
+                  key={i}
+                  className={i === active ? 'tab active' : 'tab'}
+                  onClick={() => {
+                    setActive(i)
+                    setQuery('')
+                    setYou(autoYou(c))
+                  }}
+                >
+                  {c.name}
+                </button>
+              ))}
+            </div>
+          ) : null}
+
+          <div className="search-bar">
+            <input
+              type="search"
+              placeholder="Buscar en el chat…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+            {query.trim() ? <span className="count">{filtered.length} resultados</span> : null}
+          </div>
+
+          <main className="chat">
+            {filtered.length ? (
+              <Messages bubbles={filtered} you={you} media={chat.media} onImage={(url, name) => setLb({ url, name })} />
+            ) : (
+              <div className="no-results">Sin resultados para «{query}»</div>
+            )}
+          </main>
+        </>
+      ) : (
+        <main className="start">
+          <h1 className="logo">WhatsApp <span>Chat Viewer</span></h1>
+          <DropZone onFile={processFile} busy={phase === 'parsing'} error={error} />
+        </main>
+      )}
+
+      {lb ? (
+        <div className="lightbox" onClick={() => setLb(null)}>
+          <img src={lb.url} alt={lb.name} />
+        </div>
+      ) : null}
+    </div>
+  )
+}
