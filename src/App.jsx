@@ -5,10 +5,6 @@ import { parseChat, participantsOf } from './lib/parser.js'
 import { decodeBytes } from './lib/decode.js'
 import { kindOf, mimeFor, extOf, isAttachment, escapeHtml, linkify } from './lib/media.js'
 
-// El chat se muestra dentro de un contenedor rotado 180° (lista "invertida" para
-// arrancar en el último mensaje). Esa rotación invierte la dirección del scroll
-// de la rueda y las teclas; este scroller la vuelve a invertir para que quede
-// natural: rueda/tecla abajo = hacia los mensajes más nuevos.
 const ChatScroller = forwardRef((props, ref) => {
   const handleRef = (el) => {
     if (el && !el.dataset.invScroll) {
@@ -64,7 +60,6 @@ function escRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
-// Envuelve en <mark> las apariciones de q dentro de un texto ya escapado.
 function highlight(escaped, q) {
   return escaped.replace(new RegExp(`(${escRegExp(q)})`, 'gi'), '<mark class="hl">$1</mark>')
 }
@@ -269,7 +264,7 @@ function DropZone({ onFile, busy, error }) {
 }
 
 export default function App() {
-  const [phase, setPhase] = useState('idle') // idle | parsing | ready
+  const [phase, setPhase] = useState('idle')
   const [error, setError] = useState(null)
   const [chats, setChats] = useState([])
   const [active, setActive] = useState(0)
@@ -303,7 +298,6 @@ export default function App() {
         throw new Error('No se encontró ningún archivo .txt dentro del zip.')
       }
 
-      // Libera URLs de objetos anteriores.
       urlsRef.current.forEach((u) => URL.revokeObjectURL(u))
       urlsRef.current = []
 
@@ -369,13 +363,8 @@ export default function App() {
     return out
   }, [chat])
 
-  // Orden invertido (el más nuevo primero) + rotación 180° en CSS: la lista
-  // "crece hacia arriba" y arranca mostrando el último mensaje abajo.
   const reversed = useMemo(() => rows.slice().reverse(), [rows])
 
-  // Índices (dentro de la lista virtualizada) de los mensajes que coinciden,
-  // ordenados de más antiguo a más nuevo: la flecha abajo = siguiente = más
-  // reciente, la flecha arriba = anterior = más viejo.
   const matches = useMemo(() => {
     if (!chat || !q) return []
     const list = []
@@ -396,8 +385,6 @@ export default function App() {
     if (matches.length) setSearchIdx((i) => Math.max(i - 1, 0))
   }, [matches.length])
 
-  // Al buscar, salta al mensaje de la coincidencia actual sin salir del chat
-  // completo, para poder seguir haciendo scroll desde ahí.
   useEffect(() => {
     if (!chat || currentMatch < 0) return
     const raf = requestAnimationFrame(() => {

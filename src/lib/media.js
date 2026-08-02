@@ -1,7 +1,6 @@
 const ATTACH_RE =
   /^\u200e?(.+?)\s*(?:\((?:archivo adjunto|adjunto|file attached)\)|\[(?:archivo adjunto|adjunto|file attached)\])\s*$/i
 
-// Devuelve el nombre de archivo si la línea es una línea de adjunto, o null.
 export function isAttachment(line) {
   const m = ATTACH_RE.exec(line)
   return m ? m[1] : null
@@ -50,7 +49,6 @@ export function escapeHtml(s) {
     .replace(/"/g, '&quot;')
 }
 
-// Recibe texto ya escapado y convierte URLs en enlaces.
 export function linkify(escaped) {
   return escaped.replace(
     /(https?:\/\/[^\s<]+)/g,

@@ -16,8 +16,6 @@ function isSystem(m) {
   )
 }
 
-// Parsea el .txt crudo y devuelve "burbujas" (mensajes consecutivos del mismo
-// remitente agrupados, como en WhatsApp).
 export function parseChat(text) {
   const lines = String(text).replace(/\r\n?/g, '\n').split('\n')
   const messages = []
