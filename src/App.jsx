@@ -60,6 +60,15 @@ function fmtDate(d) {
   return `${parseInt(day, 10)} de ${MONTHS[parseInt(month, 10) - 1]} de ${year}`
 }
 
+function escRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+// Envuelve en <mark> las apariciones de q dentro de un texto ya escapado.
+function highlight(escaped, q) {
+  return escaped.replace(new RegExp(`(${escRegExp(q)})`, 'gi'), '<mark class="hl">$1</mark>')
+}
+
 async function loadItems(file) {
   const name = file.name.toLowerCase()
   if (name.endsWith('.zip')) {
@@ -97,7 +106,7 @@ function autoYou(chat) {
   return others.length ? others[0] : chat.participants[0] || ''
 }
 
-function Bubble({ b, you, media, onImage }) {
+function Bubble({ b, you, media, onImage, q }) {
   const out = b.s === you
   const blocks = useMemo(() => {
     const out = []
@@ -122,11 +131,12 @@ function Bubble({ b, you, media, onImage }) {
       } else if (line.trim() === '<Multimedia omitido>') {
         out.push({ type: 'omitted' })
       } else if (line.trim() !== '') {
-        out.push({ type: 'text', html: linkify(escapeHtml(line)) })
+        const html = q ? highlight(escapeHtml(line), q) : linkify(escapeHtml(line))
+        out.push({ type: 'text', html })
       }
     }
     return out
-  }, [b.b, media])
+  }, [b.b, media, q])
 
   if (b.s === 'system') {
     return (
@@ -268,6 +278,7 @@ export default function App() {
   const [dark, setDark] = useState(false)
   const [lb, setLb] = useState(null)
   const [showFab, setShowFab] = useState(false)
+  const [searchIdx, setSearchIdx] = useState(0)
   const urlsRef = useRef([])
   const virtuosoRef = useRef(null)
 
@@ -322,6 +333,7 @@ export default function App() {
       setChats(parsed)
       setActive(0)
       setQuery('')
+      setSearchIdx(0)
       setYou(autoYou(parsed[0]))
       setPhase('ready')
     } catch (e) {
@@ -336,21 +348,18 @@ export default function App() {
     setChats([])
     setActive(0)
     setQuery('')
+    setSearchIdx(0)
     setYou('')
     setPhase('idle')
   }
 
-  const filtered = useMemo(() => {
-    if (!chat) return []
-    const q = query.trim().toLowerCase()
-    if (!q) return chat.bubbles
-    return chat.bubbles.filter((b) => b.b.toLowerCase().includes(q))
-  }, [chat, query])
+  const q = query.trim().toLowerCase()
 
   const rows = useMemo(() => {
+    if (!chat) return []
     const out = []
     let lastDate = null
-    for (const b of filtered) {
+    for (const b of chat.bubbles) {
       if (b.s !== 'system' && b.d !== lastDate) {
         out.push({ kind: 'date', date: b.d })
         lastDate = b.d
@@ -358,20 +367,57 @@ export default function App() {
       out.push({ kind: 'msg', b })
     }
     return out
-  }, [filtered])
+  }, [chat])
 
   // Orden invertido (el más nuevo primero) + rotación 180° en CSS: la lista
   // "crece hacia arriba" y arranca mostrando el último mensaje abajo.
   const reversed = useMemo(() => rows.slice().reverse(), [rows])
 
-  const renderRow = (row) => (
-    <div className="msg-col">
+  // Índices (dentro de la lista virtualizada) de los mensajes que coinciden,
+  // ordenados de más antiguo a más nuevo: la flecha abajo = siguiente = más
+  // reciente, la flecha arriba = anterior = más viejo.
+  const matches = useMemo(() => {
+    if (!chat || !q) return []
+    const list = []
+    for (let i = 0; i < reversed.length; i++) {
+      const row = reversed[i]
+      if (row.kind === 'msg' && row.b.b.toLowerCase().includes(q)) list.push(i)
+    }
+    return list.reverse()
+  }, [chat, q, reversed])
+
+  const currentMatch = matches.length ? Math.min(searchIdx, matches.length - 1) : -1
+
+  const nextMatch = useCallback(() => {
+    if (matches.length) setSearchIdx((i) => Math.min(i + 1, matches.length - 1))
+  }, [matches.length])
+
+  const prevMatch = useCallback(() => {
+    if (matches.length) setSearchIdx((i) => Math.max(i - 1, 0))
+  }, [matches.length])
+
+  // Al buscar, salta al mensaje de la coincidencia actual sin salir del chat
+  // completo, para poder seguir haciendo scroll desde ahí.
+  useEffect(() => {
+    if (!chat || currentMatch < 0) return
+    const raf = requestAnimationFrame(() => {
+      virtuosoRef.current?.scrollToIndex({
+        index: matches[currentMatch],
+        align: 'center',
+        behavior: 'smooth',
+      })
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [chat, matches, currentMatch])
+
+  const renderRow = (row, i) => (
+    <div className={`msg-col${i === currentMatch ? ' hl-current' : ''}`}>
       {row.kind === 'date' ? (
         <div className="date-sep">
           <span>{fmtDate(row.date)}</span>
         </div>
       ) : (
-        <Bubble b={row.b} you={you} media={chat.media} onImage={(url, name) => setLb({ url, name })} />
+        <Bubble b={row.b} you={you} media={chat.media} q={q} onImage={(url, name) => setLb({ url, name })} />
       )}
     </div>
   )
@@ -441,6 +487,7 @@ export default function App() {
                   onClick={() => {
                     setActive(i)
                     setQuery('')
+                    setSearchIdx(0)
                     setYou(autoYou(c))
                   }}
                 >
@@ -458,36 +505,72 @@ export default function App() {
               type="search"
               placeholder="Buscar en el chat…"
               value={query}
-              onChange={(e) => setQuery(e.target.value)}
+              onChange={(e) => {
+                setQuery(e.target.value)
+                setSearchIdx(0)
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'ArrowDown') {
+                  e.preventDefault()
+                  nextMatch()
+                } else if (e.key === 'ArrowUp') {
+                  e.preventDefault()
+                  prevMatch()
+                } else if (e.key === 'Enter') {
+                  e.preventDefault()
+                  nextMatch()
+                }
+              }}
             />
-            {query.trim() ? <span className="count">{filtered.length} resultados</span> : null}
+            {q ? (
+              <div className="search-nav">
+                <button
+                  className="nav-btn"
+                  onClick={prevMatch}
+                  disabled={currentMatch <= 0}
+                  aria-label="Anterior coincidencia"
+                  title="Anterior (más viejo)"
+                >
+                  ↑
+                </button>
+                <span className="count">
+                  {matches.length ? `${currentMatch + 1}/${matches.length}` : '0/0'}
+                </span>
+                <button
+                  className="nav-btn"
+                  onClick={nextMatch}
+                  disabled={currentMatch < 0 || currentMatch >= matches.length - 1}
+                  aria-label="Siguiente coincidencia"
+                  title="Siguiente (más nuevo)"
+                >
+                  ↓
+                </button>
+              </div>
+            ) : null}
           </div>
 
-          {filtered.length ? (
-            query.trim() ? (
-              <div className="chat plain">
-                {rows.map((row, i) => (
-                  <div key={i}>{renderRow(row)}</div>
-                ))}
-              </div>
-            ) : (
-              <div className="chat-rot">
-                <Virtuoso
-                  ref={virtuosoRef}
-                  key={chat.name}
-                  components={{ Scroller: ChatScroller }}
-                  data={reversed}
-                  computeItemKey={(i) => i}
-                  overscan={1000}
-                  atTopStateChange={(atTop) => setShowFab(!atTop)}
-                  itemContent={(i, row) => renderRow(row)}
-                />
-              </div>
-            )
-          ) : (
+          {!chat.bubbles.length ? (
+            <div className="no-results">
+              <div className="nr-emoji">💬</div>
+              Este chat no tiene mensajes.
+            </div>
+          ) : q && !matches.length ? (
             <div className="no-results">
               <div className="nr-emoji">🔍</div>
-              Sin resultados para «{query}»
+              Sin resultados para «{query.trim()}»
+            </div>
+          ) : (
+            <div className="chat-rot">
+              <Virtuoso
+                ref={virtuosoRef}
+                key={chat.name}
+                components={{ Scroller: ChatScroller }}
+                data={reversed}
+                computeItemKey={(i) => i}
+                overscan={1000}
+                atTopStateChange={(atTop) => setShowFab(!atTop)}
+                itemContent={(i, row) => renderRow(row, i)}
+              />
             </div>
           )}
 
