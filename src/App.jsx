@@ -4,6 +4,7 @@ import JSZip from 'jszip'
 import { parseChat, participantsOf } from './lib/parser.js'
 import { decodeBytes } from './lib/decode.js'
 import { kindOf, mimeFor, extOf, isAttachment, escapeHtml, linkify } from './lib/media.js'
+import { getSavedChats, saveChat, removeChat } from './lib/idb.js'
 
 const ChatScroller = forwardRef((props, ref) => {
   const handleRef = (el) => {
@@ -62,6 +63,38 @@ function escRegExp(s) {
 
 function highlight(escaped, q) {
   return escaped.replace(new RegExp(`(${escRegExp(q)})`, 'gi'), '<mark class="hl">$1</mark>')
+}
+
+function uid() {
+  return typeof crypto !== 'undefined' && crypto.randomUUID
+    ? crypto.randomUUID()
+    : Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10)
+}
+
+function fmtBytes(n) {
+  if (!Number.isFinite(n)) return ''
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let v = n
+  let i = 0
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024
+    i++
+  }
+  return `${v.toFixed(v >= 100 ? 0 : v >= 10 ? 1 : 2)} ${units[i]}`
+}
+
+function fmtWhen(ts) {
+  if (!ts) return ''
+  const diff = Date.now() - ts
+  const hour = 3600000
+  const day = 86400000
+  if (diff < hour) return 'recién guardado'
+  if (diff < day) return `hace ${Math.round(diff / hour)} h`
+  if (diff < 7 * day) return `hace ${Math.round(diff / day)} d`
+  const d = new Date(ts)
+  const dd = String(d.getDate()).padStart(2, '0')
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  return `${dd}/${mm}/${d.getFullYear()}`
 }
 
 async function loadItems(file) {
@@ -210,7 +243,7 @@ function Bubble({ b, you, media, onImage, q }) {
   )
 }
 
-function DropZone({ onFile, busy, error }) {
+function DropZone({ onFile, busy, error, onBrowse }) {
   const inputRef = useRef(null)
   const [over, setOver] = useState(false)
   const [dragErr, setDragErr] = useState(null)
@@ -223,6 +256,11 @@ function DropZone({ onFile, busy, error }) {
     }
     setDragErr(null)
     onFile(file)
+  }
+
+  const browse = () => {
+    if (onBrowse) onBrowse()
+    else inputRef.current?.click()
   }
 
   return (
@@ -239,7 +277,7 @@ function DropZone({ onFile, busy, error }) {
           setOver(false)
           handle(e.dataTransfer.files?.[0])
         }}
-        onClick={() => inputRef.current?.click()}
+        onClick={browse}
       >
         <input
           ref={inputRef}
@@ -274,10 +312,25 @@ export default function App() {
   const [lb, setLb] = useState(null)
   const [showFab, setShowFab] = useState(false)
   const [searchIdx, setSearchIdx] = useState(0)
+  const [saved, setSaved] = useState([])
   const urlsRef = useRef([])
   const virtuosoRef = useRef(null)
 
   const chat = chats[active]
+
+  const pickerAvailable = !!window.showOpenFilePicker
+
+  useEffect(() => {
+    let mounted = true
+    getSavedChats()
+      .then((list) => {
+        if (mounted) setSaved(list)
+      })
+      .catch(() => {})
+    return () => {
+      mounted = false
+    }
+  }, [])
 
   useEffect(() => {
     if (!lb) return
@@ -288,7 +341,7 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [lb])
 
-  const processFile = useCallback(async (file) => {
+  const processFile = useCallback(async (file, handle) => {
     setError(null)
     setPhase('parsing')
     try {
@@ -330,6 +383,25 @@ export default function App() {
       setSearchIdx(0)
       setYou(autoYou(parsed[0]))
       setPhase('ready')
+
+      if (handle && typeof handle.getFile === 'function') {
+        try {
+          const existing = await getSavedChats()
+          const record = {
+            id: uid(),
+            name: file.name,
+            fileName: file.name,
+            size: file.size,
+            addedAt: Date.now(),
+            lastOpened: Date.now(),
+            handle,
+          }
+          const dups = existing.filter((r) => r.fileName === file.name)
+          await saveChat(record)
+          await Promise.all(dups.map((r) => removeChat(r.id)))
+          setSaved(await getSavedChats())
+        } catch {}
+      }
     } catch (e) {
       setError(e.message || String(e))
       setPhase('idle')
@@ -345,6 +417,58 @@ export default function App() {
     setSearchIdx(0)
     setYou('')
     setPhase('idle')
+  }
+
+  const openPicker = async () => {
+    if (!window.showOpenFilePicker) return
+    try {
+      const [handle] = await window.showOpenFilePicker({
+        multiple: false,
+        types: [
+          {
+            description: 'Chat de WhatsApp',
+            accept: { 'application/zip': ['.zip'], 'text/plain': ['.txt'] },
+          },
+        ],
+      })
+      const file = await handle.getFile()
+      await processFile(file, handle)
+    } catch (e) {
+      if (e && e.name === 'AbortError') return
+      setError('No se pudo abrir el archivo: ' + (e && e.message ? e.message : String(e)))
+      setPhase('idle')
+    }
+  }
+
+  const openSaved = async (rec) => {
+    setError(null)
+    setPhase('parsing')
+    try {
+      const handle = rec.handle
+      if (!handle || typeof handle.getFile !== 'function') {
+        throw new Error('Este chat no tiene un puntero válido al archivo.')
+      }
+      let perm = await handle.queryPermission({ mode: 'read' })
+      if (perm !== 'granted') {
+        perm = await handle.requestPermission({ mode: 'read' })
+      }
+      if (perm !== 'granted') {
+        setPhase('idle')
+        return
+      }
+      const file = await handle.getFile()
+      await processFile(file, handle)
+    } catch (e) {
+      setError(`No se pudo abrir «${rec.name || ''}». ¿Se movió o borró el archivo?`)
+      setPhase('idle')
+    }
+  }
+
+  const delSaved = async (id) => {
+    try {
+      await removeChat(id)
+      setSaved(await getSavedChats())
+    } catch {}
   }
 
   const q = query.trim().toLowerCase()
@@ -581,7 +705,58 @@ export default function App() {
           <h1 className="logo">
             WhatsApp <span>Chat Viewer</span>
           </h1>
-          <DropZone onFile={processFile} busy={phase === 'parsing'} error={error} />
+          {pickerAvailable ? (
+            <div className="start-cols">
+              <section className="start-col">
+                <div className="saved-list">
+                  <h3 className="saved-title">Historial de chats</h3>
+                  {saved.length ? (
+                    saved.map((rec) => (
+                      <div className="saved-item" key={rec.id}>
+                        <button className="saved-open" onClick={() => openSaved(rec)}>
+                          <span className="saved-name">{rec.name}</span>
+                          <span className="saved-meta">
+                            {fmtBytes(rec.size)} · {fmtWhen(rec.addedAt)}
+                          </span>
+                        </button>
+                        <button
+                          className="saved-del"
+                          onClick={() => delSaved(rec.id)}
+                          aria-label="Quitar del historial"
+                          title="Quitar del historial"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="saved-empty">
+                      Todavía no hay chats guardados. Al elegir un .zip se agrega acá.
+                    </div>
+                  )}
+                </div>
+                <div className="chrome-note">
+                  💡 El historial solo es compatible con Chrome y Edge.
+                </div>
+              </section>
+              <div className="start-divider" aria-hidden="true" />
+              <section className="start-col">
+                <DropZone
+                  onFile={processFile}
+                  onBrowse={openPicker}
+                  busy={phase === 'parsing'}
+                  error={error}
+                />
+              </section>
+            </div>
+          ) : (
+            <>
+              <DropZone onFile={processFile} busy={phase === 'parsing'} error={error} />
+              <div className="chrome-note">
+                💡 El historial de chats solo es compatible con Chrome y Edge.
+              </div>
+            </>
+          )}
         </main>
       )}
 
